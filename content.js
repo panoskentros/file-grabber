@@ -1,4 +1,4 @@
-// Injected on demand: area selector, link matching and the review panel (in a shadow root).
+// Injected on demand: area selector (or pasted/dropped screenshot), link matching and the review panel (shadow root).
 (function () {
   if (window.__fgLoaded) return;
   window.__fgLoaded = true;
@@ -11,19 +11,26 @@
     * { box-sizing: border-box; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
     .shade { position: fixed; inset: 0; z-index: 2147483647; cursor: crosshair; background: rgba(0,0,0,.25); }
     .box { position: fixed; border: 2px solid #2f7df6; background: rgba(47,125,246,.15); pointer-events: none; }
-    .hint { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 2147483647;
+    .hint { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 2147483647; text-align: center;
       background: #111; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 14px; pointer-events: none; }
     .panel { position: fixed; top: 16px; right: 16px; width: 380px; max-height: 80vh; overflow: auto; z-index: 2147483647;
       background: #fff; color: #111; border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.35); padding: 14px; font-size: 14px; }
     h2 { margin: 0 0 8px; font-size: 15px; }
     label.row { display: flex; gap: 8px; align-items: flex-start; padding: 5px 0; border-top: 1px solid #eee; word-break: break-all; }
     .sub { color: #666; font-size: 12px; }
+    .note { color: #444; font-size: 12px; margin-bottom: 6px; }
     .miss { color: #a15c00; font-size: 12px; margin-top: 8px; word-break: break-all; }
-    .btns { display: flex; gap: 8px; margin-top: 12px; }
+    .opts { margin-top: 10px; display: grid; gap: 6px; font-size: 13px; }
+    .opts input[type=text] { width: 100%; padding: 5px 7px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; }
+    .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     button { border: 0; border-radius: 8px; padding: 8px 12px; font-size: 14px; cursor: pointer; background: #e8e8e8; color: #111; }
     button.primary { background: #2f7df6; color: #fff; }
     button:disabled { opacity: .5; cursor: default; }
   `;
+
+  const bg = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
+  const getPrefs = () => chrome.storage.local.get({ autoDownload: false, folderMode: 'title', customFolder: '' }).catch(() => ({ autoDownload: false, folderMode: 'title', customFolder: '' }));
+  const setPrefs = (o) => chrome.storage.local.set(o).catch(() => {});
 
   function mount() {
     unmount();
@@ -46,29 +53,72 @@
     return n;
   };
 
-  // ---------- 1. select an area ----------
-  function startSelection() {
+  function showStatus(text, buttons = null) {
+    const root = mount();
+    const panel = el('div', { className: 'panel' }, el('h2', { textContent: text }));
+    if (buttons) {
+      const row = el('div', { className: 'btns' });
+      for (const b of buttons) row.append(el('button', { textContent: b.label, onclick: b.onclick }));
+      row.append(el('button', { textContent: 'Close', onclick: unmount }));
+      panel.append(row);
+    }
+    root.append(panel);
+  }
+
+  // ---------- 1. select an area, or paste / drop a screenshot ----------
+  async function startSelection() {
+    bg({ type: 'fg-warm' }); // preload the OCR engine
+    const collected = ((await bg({ type: 'fg-acc-get' })) || {}).items || [];
     const root = mount();
     const shade = el('div', { className: 'shade' });
-    const hint = el('div', { className: 'hint', textContent: 'Drag over the list of file names — Esc to cancel' });
+    const hint = el('div', {
+      className: 'hint',
+      textContent:
+        'Drag over the list of file names — or paste / drop a screenshot (⌘V / Ctrl+V) — Esc to cancel' +
+        (collected.length ? ` · ${collected.length} collected so far` : '')
+    });
     root.append(shade, hint);
-    let box = null;
     let x0 = 0, y0 = 0;
 
-    const onKey = (e) => {
+    const cleanup = () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('paste', onPaste, true);
+    };
+    function onKey(e) {
       if (e.key === 'Escape') {
         cleanup();
         unmount();
       }
-    };
-    const cleanup = () => document.removeEventListener('keydown', onKey, true);
+    }
+    function takeImage(file) {
+      if (!file || !file.type.startsWith('image/')) return false;
+      const fr = new FileReader();
+      fr.onload = () => {
+        cleanup();
+        lastRect = null;
+        showStatus('Reading the screenshot…');
+        bg({ type: 'fg-image', dataUrl: fr.result });
+      };
+      fr.readAsDataURL(file);
+      return true;
+    }
+    function onPaste(e) {
+      const item = [...((e.clipboardData && e.clipboardData.items) || [])].find((i) => i.kind === 'file' && i.type.startsWith('image/'));
+      if (item && takeImage(item.getAsFile())) e.preventDefault();
+    }
     document.addEventListener('keydown', onKey, true);
+    document.addEventListener('paste', onPaste, true);
+    shade.addEventListener('dragover', (e) => e.preventDefault());
+    shade.addEventListener('drop', (e) => {
+      e.preventDefault();
+      takeImage(e.dataTransfer && e.dataTransfer.files[0]);
+    });
 
     shade.addEventListener('mousedown', (e) => {
       e.preventDefault();
       x0 = e.clientX;
       y0 = e.clientY;
-      box = el('div', { className: 'box' });
+      const box = el('div', { className: 'box' });
       root.append(box);
       const move = (ev) => {
         const x = Math.min(x0, ev.clientX), y = Math.min(y0, ev.clientY);
@@ -90,110 +140,118 @@
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         await new Promise((r) => setTimeout(r, 60));
         showStatus('Reading the screenshot…');
-        chrome.runtime.sendMessage({ type: 'fg-capture', rect, viewportWidth: window.innerWidth });
+        bg({ type: 'fg-capture', rect, viewportWidth: window.innerWidth });
       };
       window.addEventListener('mousemove', move, true);
       window.addEventListener('mouseup', up, true);
     });
   }
 
-  function showStatus(text, withClose = false) {
-    const root = mount();
-    const panel = el('div', { className: 'panel' }, el('h2', { textContent: text }));
-    if (withClose) panel.append(el('div', { className: 'btns' }, el('button', { textContent: 'Close', onclick: unmount })));
-    root.append(panel);
-  }
-
-  // ---------- 2. link candidates ----------
-  function lastSegment(href) {
-    try {
-      const u = new URL(href);
-      const seg = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || '');
-      return seg;
-    } catch (e) {
-      return '';
-    }
-  }
-
-  function collectCandidates(rect) {
-    const seen = new Set();
-    const out = [];
-    for (const a of document.querySelectorAll('a[href]')) {
-      if (!/^https?:/i.test(a.href) || seen.has(a.href + '|' + a.textContent)) continue;
-      const text = a.textContent.replace(/\s+/g, ' ').trim();
-      const labels = [text, a.getAttribute('download') || '', a.title || '', lastSegment(a.href)].filter(
-        (l) => l && l.length >= 4 && l.length <= 200
-      );
-      if (!labels.length) continue;
-      seen.add(a.href + '|' + a.textContent);
-      const r = a.getBoundingClientRect();
-      const inRegion = r.right > rect.x && r.left < rect.x + rect.w && r.bottom > rect.y && r.top < rect.y + rect.h;
-      out.push({ href: a.href, labels, inRegion });
-    }
-    return out;
-  }
-
-  const SAFE_NAME = /[\\/:*?"<>|\u0000-\u001f]/g;
-  function downloadName(label) {
-    const t = label.trim().replace(SAFE_NAME, '_');
+  // ---------- 2. helpers ----------
+  const SAFE = /[\\/:*?"<>|\u0000-\u001f]/g;
+  const downloadName = (label) => {
+    const t = label.trim().replace(SAFE, '_');
     return FGMatch.EXT_RE.test(t) ? t : '';
+  };
+  const titleFolder = () => document.title.replace(SAFE, '_').replace(/\s+/g, ' ').trim().replace(/^\.+|[. ]+$/g, '').slice(0, 60);
+
+  // No OCR match: fall back to the file-like links that sit inside the selected area.
+  function domFallback(candidates) {
+    const byHref = new Map();
+    for (const c of candidates) {
+      if (!c.inRegion || !c.fileLike) continue;
+      const label = c.hasText ? c.labels[0] : c.labels[c.labels.length - 1];
+      if (!byHref.has(c.href) || (c.hasText && !byHref.get(c.href).hasText)) byHref.set(c.href, { href: c.href, label, hasText: c.hasText });
+    }
+    return [...byHref.values()].map((m) => ({ href: m.href, label: m.label, sub: 'link inside your selection (not read from the screenshot)' }));
+  }
+
+  async function doDownload(items, folder, prefs) {
+    if (folder !== undefined) {
+      const mode = folder === '' ? 'none' : folder === titleFolder() ? 'title' : 'custom';
+      await setPrefs({ folderMode: mode, customFolder: mode === 'custom' ? folder : prefs.customFolder });
+    }
+    showStatus('Starting downloads…');
+    const res = await bg({ type: 'fg-download', items: items.map((m) => ({ url: m.href, name: downloadName(m.label) })), folder });
+    await bg({ type: 'fg-acc-clear' });
+    const failed = ((res && res.results) || []).filter((r) => !r.ok);
+    const where = folder ? ` into “${folder}”` : '';
+    showStatus(
+      failed.length
+        ? `Started ${items.length - failed.length}, failed ${failed.length}: ${failed[0].error}`
+        : `Started ${items.length} download${items.length > 1 ? 's' : ''}${where}`,
+      (await getPrefs()).autoDownload
+        ? [{ label: 'Ask me before downloading', onclick: async () => { await setPrefs({ autoDownload: false }); unmount(); } }]
+        : []
+    );
   }
 
   // ---------- 3. review panel ----------
-  function showResults(lines) {
-    const { matches, unmatched } = FGMatch.matchLines(lines, collectCandidates(lastRect));
-    const root = mount();
-    const panel = el('div', { className: 'panel' });
-    root.append(panel);
+  async function showResults(lines, candidates, error) {
+    let { matches, unmatched } = FGMatch.matchLines(lines, candidates || []);
+    let note = '';
+    let fresh = matches.map((m) => ({ href: m.href, label: m.label, sub: `read as “${m.line}” · ${Math.round(m.score * 100)}%` }));
+    if (!fresh.length && lastRect) {
+      fresh = domFallback(candidates || []);
+      if (fresh.length) note = (error ? `Could not read the screenshot (${error}). ` : 'No file names recognised. ') + 'Using the links inside your selection instead.';
+    }
 
-    if (!matches.length) {
-      panel.append(
-        el('h2', { textContent: 'No matching links found' }),
-        el('div', { className: 'sub', textContent: 'Text read from the screenshot:' }),
-        el('div', { className: 'miss', textContent: lines.join(' · ') || '(nothing recognised)' }),
-        el('div', { className: 'btns' }, el('button', { textContent: 'Close', onclick: unmount }))
-      );
+    const prev = ((await bg({ type: 'fg-acc-get' })) || {}).items || [];
+    const byHref = new Map(prev.map((i) => [i.href, { ...i, sub: 'from an earlier screenshot' }]));
+    for (const m of fresh) byHref.set(m.href, m);
+    const items = [...byHref.values()];
+    const prefs = await getPrefs();
+    const folderDefault = prefs.folderMode === 'none' ? '' : prefs.folderMode === 'custom' ? prefs.customFolder : titleFolder();
+
+    if (!items.length) {
+      showStatus(error ? 'Could not read the screenshot: ' + error : 'No matching links found', [
+        { label: 'Try again', onclick: startSelection }
+      ]);
+      if (lines.length && host) host.shadowRoot.querySelector('.panel').insertBefore(
+        el('div', { className: 'miss', textContent: 'Text read: ' + lines.join(' · ') }), host.shadowRoot.querySelector('.btns'));
       return;
     }
 
-    panel.append(el('h2', { textContent: `Found ${matches.length} file${matches.length > 1 ? 's' : ''}` }));
-    const boxes = matches.map((m) => {
+    if (prefs.autoDownload) return doDownload(items, folderDefault, prefs);
+
+    await bg({ type: 'fg-acc-set', items });
+    const root = mount();
+    const panel = el('div', { className: 'panel' });
+    root.append(panel);
+    panel.append(el('h2', { textContent: `Found ${items.length} file${items.length > 1 ? 's' : ''}` }));
+    if (note) panel.append(el('div', { className: 'note', textContent: note }));
+    const boxes = items.map((m) => {
       const cb = el('input', { type: 'checkbox', checked: true });
-      panel.append(
-        el(
-          'label',
-          { className: 'row' },
-          cb,
-          el('span', {}, m.label, el('div', { className: 'sub', textContent: `read as “${m.line}” · ${Math.round(m.score * 100)}%` }))
-        )
-      );
+      panel.append(el('label', { className: 'row' }, cb, el('span', {}, m.label, el('div', { className: 'sub', textContent: m.sub || '' }))));
       return cb;
     });
-    if (unmatched.length) {
-      panel.append(el('div', { className: 'miss', textContent: 'No link found for: ' + unmatched.join(' · ') }));
-    }
+    if (unmatched.length) panel.append(el('div', { className: 'miss', textContent: 'No link found for: ' + unmatched.join(' · ') }));
+
+    const folder = el('input', { type: 'text', value: folderDefault, placeholder: '(Downloads folder itself)' });
+    const auto = el('input', { type: 'checkbox' });
+    panel.append(
+      el('div', { className: 'opts' },
+        el('label', {}, 'Save in subfolder of Downloads', folder),
+        el('label', {}, auto, ' Download without asking next time')
+      )
+    );
 
     const dl = el('button', { className: 'primary', textContent: 'Download selected' });
     dl.onclick = async () => {
-      const items = matches
-        .filter((_, i) => boxes[i].checked)
-        .map((m) => ({ url: m.href, filename: downloadName(m.label) }));
-      if (!items.length) return;
+      const chosen = items.filter((_, i) => boxes[i].checked);
+      if (!chosen.length) return;
       dl.disabled = true;
-      dl.textContent = 'Starting downloads…';
-      const res = await chrome.runtime.sendMessage({ type: 'fg-download', items });
-      const failed = (res && res.results ? res.results : []).filter((r) => !r.ok);
-      showStatus(
-        failed.length ? `Started ${items.length - failed.length}, failed ${failed.length}: ${failed[0].error}` : `Started ${items.length} download${items.length > 1 ? 's' : ''}`,
-        true
-      );
+      if (auto.checked) await setPrefs({ autoDownload: true });
+      doDownload(chosen, folder.value.trim(), prefs);
     };
-    panel.append(el('div', { className: 'btns' }, dl, el('button', { textContent: 'Cancel', onclick: unmount })));
+    const more = el('button', { textContent: 'Add another screenshot', onclick: startSelection });
+    const cancel = el('button', { textContent: 'Cancel', onclick: async () => { await bg({ type: 'fg-acc-clear' }); unmount(); } });
+    panel.append(el('div', { className: 'btns' }, dl, more, cancel));
   }
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'fg-start') startSelection();
-    else if (msg.type === 'fg-ocr-result') showResults(msg.lines);
-    else if (msg.type === 'fg-ocr-error') showStatus('Could not read the screenshot: ' + msg.error, true);
+    else if (msg.type === 'fg-ocr-result') showResults(msg.lines, msg.candidates, null);
+    else if (msg.type === 'fg-ocr-error') showResults([], msg.candidates, msg.error);
   });
 })();

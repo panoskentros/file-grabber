@@ -27,11 +27,14 @@ function loadImage(src) {
 
 async function prepareCanvas({ dataUrl, rect, viewportWidth }) {
   const img = await loadImage(dataUrl);
-  const k = img.naturalWidth / viewportWidth; // screenshot pixels per CSS pixel
-  const sx = Math.max(0, Math.round(rect.x * k));
-  const sy = Math.max(0, Math.round(rect.y * k));
-  const sw = Math.min(img.naturalWidth - sx, Math.round(rect.w * k));
-  const sh = Math.min(img.naturalHeight - sy, Math.round(rect.h * k));
+  let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight; // pasted image: use all of it
+  if (rect) {
+    const k = img.naturalWidth / viewportWidth; // screenshot pixels per CSS pixel
+    sx = Math.max(0, Math.round(rect.x * k));
+    sy = Math.max(0, Math.round(rect.y * k));
+    sw = Math.min(img.naturalWidth - sx, Math.round(rect.w * k));
+    sh = Math.min(img.naturalHeight - sy, Math.round(rect.h * k));
+  }
   if (sw < 10 || sh < 10) throw new Error('The selected area is too small');
 
   // Upscale small crops (Tesseract likes ~30px tall text); keep a white margin around the text.
@@ -64,6 +67,9 @@ async function prepareCanvas({ dataUrl, rect, viewportWidth }) {
 async function ocr(job) {
   const canvas = await prepareCanvas(job);
   const worker = await getWorker();
+  const candidates = job.candidates || [];
+  // Links the page shows inside the selection: once OCR has found all of them there is no need for more passes.
+  const expected = candidates.filter((c) => c.inRegion && c.fileLike);
   const seen = new Set();
   const lines = [];
   // Different layout modes miss different lines (e.g. the first row of a list), so union them.
@@ -77,12 +83,21 @@ async function ocr(job) {
         lines.push(t);
       }
     }
+    if (expected.length) {
+      const found = new Set(FGMatch.matchLines(lines, candidates).matches.map((m) => m.href));
+      if (expected.every((c) => found.has(c.href))) break;
+    }
   }
   return lines;
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.target !== 'offscreen' || msg.type !== 'ocr') return;
+  if (msg.target !== 'offscreen') return;
+  if (msg.type === 'warm') {
+    getWorker().catch(() => {}); // preload the OCR engine while the user is still selecting
+    return;
+  }
+  if (msg.type !== 'ocr') return;
   ocr(msg)
     .then((lines) => sendResponse({ lines }))
     .catch((e) => sendResponse({ error: String(e && e.message ? e.message : e) }));

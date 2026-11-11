@@ -40,8 +40,14 @@
     return 1 - approxContains(base, hay) / base.length;
   }
 
-  // candidates: [{ href, labels: string[], inRegion: boolean }]
-  // Returns { matches: [{ href, label, line, score }], unmatched: string[] }
+  // A line that plausibly is a file name (has an extension or snake_case words); used to hide OCR noise.
+  function looksLikeFileName(line) {
+    return /[\w-]{3,}\.[a-z0-9]{2,5}\b/i.test(line) || /[a-z0-9]+_[a-z0-9]+/i.test(line);
+  }
+
+  // candidates: [{ href, labels: string[], hasText?: boolean, inRegion: boolean }]
+  // labels[0] is the visible link text when hasText is true (preferred over e.g. an icon link to the same file).
+  // Returns { matches: [{ href, label, line, score }], unmatched: string[] } (unmatched = file-like lines only)
   function matchLines(lines, candidates, threshold = 0.85) {
     const byHref = new Map();
     const unmatched = [];
@@ -50,26 +56,24 @@
       if (norm(line).length < 4) continue;
       let best = null;
       for (const c of candidates) {
-        for (const label of c.labels) {
+        c.labels.forEach((label, idx) => {
           const s = score(label, line);
-          const better =
-            !best ||
-            s > best.score + 1e-9 ||
-            (Math.abs(s - best.score) < 1e-9 && c.inRegion && !best.inRegion);
-          if (s >= threshold && better) best = { href: c.href, label, line, score: s, inRegion: c.inRegion };
-        }
+          if (s < threshold) return;
+          const rank = s + (c.hasText && idx === 0 ? 1e-3 : 0) + (c.inRegion ? 1e-4 : 0);
+          if (!best || rank > best.rank) best = { href: c.href, label, line, score: s, rank };
+        });
       }
       if (best) {
         const old = byHref.get(best.href);
         if (!old || best.score > old.score) byHref.set(best.href, best);
-      } else {
+      } else if (looksLikeFileName(line)) {
         unmatched.push(line);
       }
     }
     return { matches: [...byHref.values()], unmatched };
   }
 
-  const api = { norm, score, matchLines, EXT_RE };
+  const api = { norm, score, matchLines, looksLikeFileName, EXT_RE };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.FGMatch = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

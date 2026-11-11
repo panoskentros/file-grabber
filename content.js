@@ -182,22 +182,80 @@
     return [...byHref.values()].map((m) => ({ href: m.href, label: m.label, sub: 'link inside your selection (not read from the screenshot)' }));
   }
 
-  async function doDownload(items, folder, prefs) {
-    if (folder !== undefined) {
-      const mode = folder === '' ? 'none' : folder === titleFolder() ? 'title' : 'custom';
-      const recent = (prefs.recentFolders || []).filter((f) => f !== folder);
-      if (mode === 'custom') recent.unshift(folder);
-      await setPrefs({ folderMode: mode, customFolder: mode === 'custom' ? folder : prefs.customFolder, recentFolders: recent.slice(0, 6) });
+  // ---- a folder chosen with the native (Finder) picker; the handle is remembered in this site's IndexedDB ----
+  let dirHandle = null;
+  const idb = () => new Promise((res, rej) => {
+    const r = indexedDB.open('file-grabber', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  async function idbGet(k) {
+    try {
+      const db = await idb();
+      return await new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); });
+    } catch (e) { return null; }
+  }
+  async function idbSet(k, v) {
+    try {
+      const db = await idb();
+      await new Promise((res) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = res; });
+    } catch (e) {}
+  }
+
+  function nameFromResponse(res) {
+    const cd = res.headers.get('content-disposition') || '';
+    let m = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(cd);
+    if (m) { try { return decodeURIComponent(m[1]).replace(SAFE, '_'); } catch (e) {} }
+    m = /filename\s*=\s*"?([^";]+)"?/i.exec(cd);
+    if (m) return m[1].trim().replace(SAFE, '_');
+    try { return decodeURIComponent(new URL(res.url).pathname.split('/').filter(Boolean).pop() || '').replace(SAFE, '_'); } catch (e) { return ''; }
+  }
+  async function uniqueName(handle, name) {
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : '';
+    for (let n = 0; n < 100; n++) {
+      const candidate = n ? `${stem} (${n})${ext}` : name;
+      try { await handle.getFileHandle(candidate); } catch (e) { return candidate; } // not found = free
     }
+    return name;
+  }
+  async function saveToDir(items, handle) {
+    const saved = [], failed = [];
+    for (const m of items) {
+      try {
+        const res = await fetch(m.href, { credentials: 'include' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const name = await uniqueName(handle, downloadName(m.label) || nameFromResponse(res) || 'file');
+        const w = await (await handle.getFileHandle(name, { create: true })).createWritable();
+        await res.body.pipeTo(w);
+        saved.push(name);
+      } catch (e) {
+        failed.push(m);
+      }
+    }
+    return { saved, failed };
+  }
+
+  // handle: chosen folder (or null = Chrome's normal Downloads folder)
+  async function doDownload(items, prefs, handle) {
     showStatus('Starting downloads…');
-    const res = await bg({ type: 'fg-download', items: items.map((m) => ({ url: m.href, name: downloadName(m.label) })), folder });
+    let saved = 0, viaChrome = items, where = 'your Downloads folder';
+    if (handle) {
+      const r = await saveToDir(items, handle);
+      saved = r.saved.length;
+      viaChrome = r.failed; // e.g. links on another site: let Chrome download those normally
+      where = `“${handle.name}”`;
+    }
+    const res = viaChrome.length ? await bg({ type: 'fg-download', items: viaChrome.map((m) => ({ url: m.href, name: downloadName(m.label) })), folder: '' }) : { results: [] };
     await bg({ type: 'fg-acc-clear' });
     const failed = ((res && res.results) || []).filter((r) => !r.ok);
-    const where = folder ? ` into “${folder}”` : '';
+    const total = saved + viaChrome.length - failed.length;
+    const extra = handle && viaChrome.length ? ` (${viaChrome.length} went to Downloads instead)` : '';
     showStatus(
       failed.length
-        ? `Started ${items.length - failed.length}, failed ${failed.length}: ${failed[0].error}`
-        : `Started ${items.length} download${items.length > 1 ? 's' : ''}${where}`,
+        ? `Saved ${total}, failed ${failed.length}: ${failed[0].error}`
+        : `Saved ${total} file${total > 1 ? 's' : ''} to ${where}${extra}`,
       (await getPrefs()).autoDownload
         ? [{ label: 'Ask me before downloading', onclick: async () => { await setPrefs({ autoDownload: false }); unmount(); } }]
         : []
@@ -219,7 +277,7 @@
     for (const m of fresh) byHref.set(m.href, m);
     const items = [...byHref.values()];
     const prefs = await getPrefs();
-    const folderDefault = prefs.folderMode === 'none' ? '' : prefs.folderMode === 'custom' ? prefs.customFolder : titleFolder();
+    dirHandle = await idbGet('dir');
 
     if (!items.length) {
       showStatus(error ? 'Could not read the screenshot: ' + error : 'No matching links found', [
@@ -232,7 +290,10 @@
       return;
     }
 
-    if (prefs.autoDownload) return doDownload(items, folderDefault, prefs);
+    if (prefs.autoDownload) {
+      const usable = dirHandle && (await dirHandle.queryPermission({ mode: 'readwrite' }).catch(() => 'denied')) === 'granted';
+      return doDownload(items, prefs, usable ? dirHandle : null);
+    }
 
     await bg({ type: 'fg-acc-set', items });
     const root = mount();
@@ -247,32 +308,37 @@
     });
     if (unmatched.length) panel.append(el('div', { className: 'miss', textContent: 'No link found for: ' + unmatched.join(' · ') }));
 
-    // Folder choice: a "Save to" field and a Select button (extensions can only save below the Downloads folder).
+    // Save-to field + native folder picker (opens Finder / Explorer).
     const base = prefs.downloadsDir || 'Downloads';
-    let current = folderDefault;
     const path = el('div', { className: 'path' });
-    const refreshPath = () => { path.textContent = 'Save to: ' + (current ? `${base}/${current}` : `${base} (default)`); };
+    const useDefault = el('button', { textContent: 'Use default', onclick: async () => { dirHandle = null; await idbSet('dir', null); refreshPath(); } });
+    const refreshPath = () => {
+      path.textContent = 'Save to: ' + (dirHandle ? dirHandle.name : `${base} (default)`);
+      useDefault.style.display = dirHandle ? '' : 'none';
+    };
+    const hint = el('div', { className: 'sub' });
+    const selectBtn = el('button', { textContent: 'Select folder…' });
+    if (typeof window.showDirectoryPicker !== 'function') {
+      selectBtn.disabled = true;
+      hint.textContent = 'The folder picker needs a secure (https) page.';
+    }
+    selectBtn.onclick = async () => {
+      try {
+        dirHandle = await window.showDirectoryPicker({ id: 'file-grabber', mode: 'readwrite', startIn: 'downloads' });
+        await idbSet('dir', dirHandle);
+        hint.textContent = '';
+      } catch (e) {
+        if (e && e.name !== 'AbortError') hint.textContent = 'Could not use that folder: ' + e.message;
+      }
+      refreshPath();
+    };
     refreshPath();
-
-    const menu = el('div', { className: 'menu' });
-    menu.style.display = 'none';
-    const choose = (v) => { current = v; refreshPath(); menu.style.display = 'none'; };
-    const choices = [['', 'Downloads (default)']];
-    const t = titleFolder();
-    if (t) choices.push([t, t]);
-    for (const f of [...(prefs.recentFolders || []), folderDefault]) if (f && !choices.some((c) => c[0] === f)) choices.push([f, f]);
-    for (const [v, label] of choices) menu.append(el('button', { textContent: label, onclick: () => choose(v) }));
-    const typed = el('input', { type: 'text', placeholder: 'New folder name, then Enter' });
-    typed.onkeydown = (e) => { if (e.key === 'Enter') choose(typed.value.trim().replace(SAFE_PATH, '_')); };
-    menu.append(typed);
-    const selectBtn = el('button', { textContent: 'Select folder…', onclick: () => { menu.style.display = menu.style.display === 'none' ? '' : 'none'; } });
-    const chosenFolder = () => current;
     const auto = el('input', { type: 'checkbox' });
     panel.append(
       el('div', { className: 'opts' },
         path,
-        el('div', {}, selectBtn),
-        menu,
+        el('div', { className: 'btns', style: 'margin-top:0' }, selectBtn, useDefault),
+        hint,
         el('label', {}, auto, ' Download without asking next time')
       )
     );
@@ -282,8 +348,11 @@
       const chosen = items.filter((_, i) => boxes[i].checked);
       if (!chosen.length) return;
       dl.disabled = true;
+      let handle = dirHandle;
+      // must be the first await so the click still counts as a user gesture for the permission prompt
+      if (handle && (await handle.requestPermission({ mode: 'readwrite' }).catch(() => 'denied')) !== 'granted') handle = null;
       if (auto.checked) await setPrefs({ autoDownload: true });
-      doDownload(chosen, chosenFolder(), prefs);
+      doDownload(chosen, prefs, handle);
     };
     const more = el('button', { textContent: 'Add another screenshot', onclick: startSelection });
     const cancel = el('button', { textContent: 'Cancel', onclick: async () => { await bg({ type: 'fg-acc-clear' }); unmount(); } });

@@ -170,6 +170,11 @@
 
   // ---------- 2. helpers ----------
   const SAFE = /[\\/:*?"<>|\u0000-\u001f]/g;
+  const cleanDir = (d) => d.split('/').map((p) => p.replace(SAFE, '_').trim()).filter(Boolean).join('/');
+  const fileName = (m) => {
+    const n = downloadName(m.label);
+    return m.dir && n ? cleanDir(m.dir) + '/' + n : n;
+  };
   const downloadName = (label) => {
     const t = label.trim().replace(SAFE, '_');
     return FGMatch.EXT_RE.test(t) ? t : '';
@@ -253,7 +258,8 @@
         const res = await fetch(items[i].href, { credentials: 'include' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = new Uint8Array(await res.arrayBuffer());
-        files.push({ name: uniqueIn(used, downloadName(items[i].label) || nameFromResponse(res) || 'file'), data });
+        const base = downloadName(items[i].label) || nameFromResponse(res) || 'file';
+        files.push({ name: uniqueIn(used, items[i].dir ? cleanDir(items[i].dir) + '/' + base : base), data });
       } catch (e) {
         failed.push(items[i]); // e.g. a link on another site: Chrome downloads it separately below
       }
@@ -266,7 +272,7 @@
       a.click();
       setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 10000);
     }
-    if (failed.length) await bg({ type: 'fg-download', items: failed.map((m) => ({ url: m.href, name: downloadName(m.label) })) });
+    if (failed.length) await bg({ type: 'fg-download', items: failed.map((m) => ({ url: m.href, name: fileName(m) })) });
     await bg({ type: 'fg-acc-clear' });
     showStatus(
       files.length
@@ -278,7 +284,7 @@
 
   async function doDownload(items) {
     showStatus('Starting downloads…');
-    const res = await bg({ type: 'fg-download', items: items.map((m) => ({ url: m.href, name: downloadName(m.label) })) });
+    const res = await bg({ type: 'fg-download', items: items.map((m) => ({ url: m.href, name: fileName(m) })) });
     await bg({ type: 'fg-acc-clear' });
     const failed = ((res && res.results) || []).filter((r) => !r.ok);
     const ok = items.length - failed.length;
@@ -286,6 +292,58 @@
       failed.length ? `Started ${ok}, failed ${failed.length}: ${failed[0].error}` : `Started ${ok} download${ok > 1 ? 's' : ''}`,
       []
     );
+  }
+
+  // ---- folders: a matched link that opens a folder page is replaced by the files inside it ----
+  const isFolderPage = (url) => /[?&]openDir=|\/modules\/document\//i.test(url);
+  async function probe(url) {
+    const ctl = new AbortController();
+    try {
+      const res = await fetch(url, { credentials: 'include', signal: ctl.signal });
+      if (!res.ok || !/text\/html/i.test(res.headers.get('content-type') || '')) { ctl.abort(); return null; } // a real file
+      return { html: await res.text(), url: res.url };
+    } catch (e) {
+      return null; // other site / blocked: treat as a plain file link
+    }
+  }
+  async function listFolder(page, dirName, depth, seen, budget) {
+    const doc = new DOMParser().parseFromString(page.html, 'text/html');
+    const here = new URL(page.url).searchParams.get('openDir') || '';
+    const files = [], subs = [];
+    for (const a of doc.querySelectorAll('a[href]')) {
+      let href;
+      try { href = new URL(a.getAttribute('href'), page.url).href; } catch (e) { continue; }
+      if (!/^https?:/i.test(href) || seen.has(href)) continue;
+      const text = a.textContent.replace(/\s+/g, ' ').trim();
+      if (text && text.length <= 200 && FGMatch.EXT_RE.test(text)) {
+        seen.add(href);
+        files.push({ href, label: text, dir: dirName, sub: `in folder “${dirName}”` });
+      } else if (text && depth < 3) {
+        const dir = new URL(href).searchParams.get('openDir');
+        if (dir && dir.startsWith(here + '/')) subs.push({ href, text }); // only deeper, never back up
+      }
+    }
+    for (const sub of subs) {
+      if (seen.has(sub.href) || budget.left <= 0) continue;
+      seen.add(sub.href);
+      budget.left--;
+      const p = await probe(sub.href);
+      if (p) files.push(...(await listFolder(p, dirName + '/' + sub.text, depth + 1, seen, budget)));
+    }
+    return files;
+  }
+  async function expandFolders(items) {
+    const out = [];
+    const seen = new Set();
+    const budget = { left: 40 }; // folder pages to open, at most
+    for (const m of items) {
+      if (FGMatch.EXT_RE.test(m.label.trim())) { out.push(m); continue; } // has an extension: a file
+      const page = await probe(m.href);
+      const files = page && isFolderPage(page.url) ? await listFolder(page, m.label, 0, seen, budget) : [];
+      if (files.length) out.push(...files);
+      else out.push(m); // a file without extension, or an empty/unreadable folder
+    }
+    return out;
   }
 
   // ---------- 3. review panel ----------
@@ -296,6 +354,11 @@
     if (!fresh.length && lastRect) {
       fresh = domFallback(candidates || []);
       if (fresh.length) note = (error ? `Could not read the screenshot (${error}). ` : 'No file names recognised. ') + 'Using the links inside your selection instead.';
+    }
+
+    if (fresh.some((m) => !FGMatch.EXT_RE.test(m.label.trim()))) {
+      showStatus('Checking for folders…');
+      fresh = await expandFolders(fresh);
     }
 
     const prev = ((await bg({ type: 'fg-acc-get' })) || {}).items || [];
@@ -362,7 +425,7 @@
   }
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === 'fg-start') startSelection();
+    if (msg.type === 'fg-start') bg({ type: 'fg-acc-clear' }).then(startSelection); // a new run never reuses old results
     else if (msg.type === 'fg-ocr-result') showResults(msg.lines, msg.candidates, null, msg.problem);
     else if (msg.type === 'fg-ocr-error') showResults([], msg.candidates, msg.error, msg.problem);
   });

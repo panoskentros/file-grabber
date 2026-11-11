@@ -33,7 +33,8 @@ It isn't on the Chrome Web Store, so you load it yourself:
 - **Greek and English** names both work. Accents and the two kinds of sigma are ignored when matching.
 - **Your login is used.** Files are downloaded with the session you already have in the browser, so it only reaches files you could open yourself.
 - **If the OCR finds nothing**, it falls back to the file links inside the box you drew.
-- **Several screenshots?** Use "Add another screenshot" to keep what you found and add more, even across page loads, then download everything at once.
+- **Several screenshots?** Use "Add another screenshot" to keep what you found and add more, then download everything at once. Every new run starts clean; nothing from earlier runs is kept.
+- **Folders.** If a name turns out to be a folder (like an eClass document folder), the files inside it are listed instead, subfolders included, and saved into matching subfolders (or the same paths inside the ZIP). Only files whose names show an extension are picked up.
 - **"Download without asking next time"** skips the panel and repeats whatever you did last (files or ZIP). It is saved the moment you tick it. To turn it off, open the area selector, where a button for that appears.
 - Chrome only lets extensions save inside your normal Downloads folder, so there is no folder picker. The "Save to" line just shows where files will go.
 

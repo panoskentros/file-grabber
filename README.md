@@ -1,28 +1,73 @@
 # File Grabber
 
-Chrome extension (Manifest V3). Click the toolbar icon (or Alt+Shift+G) and either drag over a list of file names on the
-page, or paste (⌘V / Ctrl+V) / drop a screenshot you already took. The extension reads the names with OCR, finds the matching
-links on the page and offers to download them.
+A small Chrome extension I wrote because I was tired of clicking through a long list of course files one by one.
+
+You drag a box around a list of file names on a page (or paste a screenshot of one), and File Grabber reads the names, finds the matching links on that page and downloads them for you.
+
+I built it for my university's eClass, where the lecture files sit in a long table, but it should work on any page that lists files as links.
+
+![A course page with a list of files](docs/course-page.png)
+
+## How it works
+
+1. Click the extension icon (or press `Alt+Shift+G`).
+2. Drag over the list of file names. Or press `Cmd/Ctrl+V` to paste a screenshot you already took, or drop an image onto the page.
+3. The extension reads the text in that area with OCR and compares it with the links on the page.
+4. A small panel lists what it found. Untick anything you don't want, then download the files one by one, or all together as a single ZIP.
+
+![The results panel](docs/results-panel.png)
+
+Under each file you can see what the OCR actually read and how close the match is. OCR isn't perfect (in the screenshot above it read "2023" as "2025" twice), which is why the panel is there: have a quick look before you hit download.
 
 ## Install
-1. Open `chrome://extensions`, enable **Developer mode**.
-2. **Load unpacked** → select this folder.
 
-## Features
-- **Select or paste** – drag an area, or paste/drop a screenshot (works even if the list is scrolled out of view).
-- **Review panel** – shows each file, what it was read as and the match score; untick anything you don't want.
-- **Fallback** – if OCR finds nothing, the file-like links inside your selection are offered instead.
-- **Save all as ZIP** – fetches every ticked file and saves one zip (named after the page title) instead of many separate downloads.
-- **Auto mode** – tick "Download without asking next time" (saved immediately); it repeats your last action (files or ZIP). Turn it off from the area selector.
-- **Several screenshots / pages** – "Add another screenshot" keeps what you already found (also across page loads) and downloads everything together.
-- **Iframes** – links in all frames of the page are considered.
-- **Greek + English OCR** – list names in either language are matched (accents ignored).
-- **Fast** – the OCR engine is preloaded when you open the selector, and extra OCR passes are skipped once every link in the selection was found.
+It isn't on the Chrome Web Store, so you load it yourself:
 
-## Notes
-- OCR runs locally (Tesseract.js, bundled in `lib/`, Greek + English data); nothing is sent anywhere.
-- Matching ignores file extensions and tolerates small OCR errors (≥85% similarity).
-- Downloads use your logged-in session.
+1. Download or clone this repo.
+2. Open `chrome://extensions` and switch on **Developer mode**.
+3. Click **Load unpacked** and choose the project folder.
+
+## Good to know
+
+- **Everything stays on your computer.** The OCR (Tesseract.js, with Greek and English data) is bundled and runs inside the browser. Nothing is uploaded anywhere.
+- **Greek and English** names both work. Accents and the two kinds of sigma are ignored when matching.
+- **Your login is used.** Files are downloaded with the session you already have in the browser, so it only reaches files you could open yourself.
+- **If the OCR finds nothing**, it falls back to the file links inside the box you drew.
+- **Several screenshots?** Use "Add another screenshot" to keep what you found and add more, even across page loads, then download everything at once.
+- **"Download without asking next time"** skips the panel and repeats whatever you did last (files or ZIP). It is saved the moment you tick it. To turn it off, open the area selector, where a button for that appears.
+- Chrome only lets extensions save inside your normal Downloads folder, so there is no folder picker. The "Save to" line just shows where files will go.
+
+## Limitations
+
+- It matches against links on the page, so a page that lists names without links can't be downloaded.
+- Links inside iframes from other sites can be matched by name, but may not be marked as inside your selection.
+- Small or blurry text reads worse. Selecting a bit more zoomed in helps.
 
 ## Development
-`npm install` (only needed to refresh `lib/`), `npm test` runs the matcher tests. `node_modules/` is git-ignored.
+
+The code is plain JavaScript with no build step.
+
+```
+manifest.json     extension manifest (Manifest V3)
+background.js     service worker: screenshots, downloads, messaging
+content.js        area selector, results panel, ZIP builder
+collect.js        collects the links on a page
+match.js          matches OCR text to links (also used by the tests)
+offscreen.js/html runs the OCR in an offscreen document
+lib/              bundled Tesseract.js, its worker/core and language data
+test/             matcher tests
+```
+
+Run the tests with:
+
+```bash
+npm test
+```
+
+`npm install` is only needed if you want to refresh the files in `lib/`.
+
+## Credits and licence
+
+OCR by [Tesseract.js](https://github.com/naptha/tesseract.js) and the Tesseract language data (Apache-2.0). Their licence is in `lib/LICENSE-tesseract.js.md`.
+
+File Grabber itself is released under the [MIT licence](LICENSE).

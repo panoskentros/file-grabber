@@ -42,7 +42,7 @@
   }
 
   const bg = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
-  const PREF_DEFAULTS = { autoDownload: false, folderMode: 'title', customFolder: '', recentFolders: [], downloadsDir: '' };
+  const PREF_DEFAULTS = { autoDownload: false, autoMode: 'files', folderMode: 'title', customFolder: '', recentFolders: [], downloadsDir: '' };
   const getPrefs = () => chrome.storage.local.get(PREF_DEFAULTS).catch(() => PREF_DEFAULTS);
   const setPrefs = (o) => chrome.storage.local.set(o).catch(() => {});
 
@@ -266,7 +266,9 @@
       files.length
         ? `Saved ${files.length} file${files.length > 1 ? 's' : ''} in one zip` + (failed.length ? `; ${failed.length} downloaded separately` : '')
         : failed.length ? `Could not fetch the files; started ${failed.length} normal downloads` : 'Nothing to save',
-      []
+      (await getPrefs()).autoDownload
+        ? [{ label: 'Ask me before downloading', onclick: async () => { await setPrefs({ autoDownload: false }); unmount(); } }]
+        : []
     );
   }
 
@@ -311,7 +313,7 @@
       return;
     }
 
-    if (prefs.autoDownload) return doDownload(items);
+    if (prefs.autoDownload) return prefs.autoMode === 'zip' ? saveAllAsZip(items) : doDownload(items);
 
     await bg({ type: 'fg-acc-set', items });
     const root = mount();
@@ -340,7 +342,7 @@
       const chosen = items.filter((_, i) => boxes[i].checked);
       if (!chosen.length) return;
       dl.disabled = true;
-      if (auto.checked) await setPrefs({ autoDownload: true });
+      if (auto.checked) await setPrefs({ autoDownload: true, autoMode: 'files' });
       doDownload(chosen);
     };
     const zipBtn = el('button', { textContent: 'Save all as ZIP' });
@@ -348,6 +350,7 @@
       const chosen = items.filter((_, i) => boxes[i].checked);
       if (!chosen.length) return;
       zipBtn.disabled = dl.disabled = true;
+      if (auto.checked) await setPrefs({ autoDownload: true, autoMode: 'zip' });
       saveAllAsZip(chosen);
     };
     const more = el('button', { textContent: 'Add another screenshot', onclick: startSelection });

@@ -1,5 +1,5 @@
 // Service worker: injects the selector, collects links from every frame, captures the tab,
-// asks the offscreen page to OCR, performs downloads (into a subfolder) and keeps multi-screenshot results.
+// asks the offscreen page to OCR, performs downloads and keeps multi-screenshot results.
 
 async function ensureOffscreen() {
   if (await chrome.offscreen.hasDocument()) return;
@@ -56,26 +56,16 @@ async function runOcr(tab, { rect, viewportWidth, dataUrl, candidates: top, prob
   }
 }
 
-// ---- downloads into a subfolder ----
-const pending = new Map(); // url -> { folder, name }
-
-function cleanFolder(f) {
-  return String(f || '')
-    .replace(/[\\:*?"<>|\u0000-\u001f]/g, '_')
-    .split('/')
-    .map((s) => s.trim().replace(/[. ]+$/, ''))
-    .filter((s) => s && s !== '.' && s !== '..')
-    .join('/');
-}
+// ---- downloads ----
+const pendingNames = new Map(); // url -> file name taken from the link label (empty = let Chrome decide)
 
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  const key = pending.has(item.url) ? item.url : pending.has(item.finalUrl) ? item.finalUrl : null;
+  const key = pendingNames.has(item.url) ? item.url : pendingNames.has(item.finalUrl) ? item.finalUrl : null;
   if (!key) return; // not ours
-  const { folder, name } = pending.get(key);
-  pending.delete(key);
-  const base = name || item.filename.split(/[\\/]/).pop();
-  chrome.storage.local.set({ downloadsDir: item.filename.replace(/[\\/][^\\/]*$/, '') }); // remember the real default folder to show it in the panel
-  suggest({ filename: folder ? `${folder}/${base}` : base, conflictAction: 'uniquify' });
+  const name = pendingNames.get(key);
+  pendingNames.delete(key);
+  chrome.storage.local.set({ downloadsDir: item.filename.replace(/[\\/][^\\/]*$/, '') }); // real default folder, shown in the panel
+  suggest(name ? { filename: name, conflictAction: 'uniquify' } : { conflictAction: 'uniquify' });
 });
 
 // ---- results collected over several screenshots / pages ----
@@ -106,21 +96,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'fg-acc-clear':
       chrome.storage.session.remove(ACC).then(() => sendResponse({ ok: true }));
       return true;
-    case 'fg-download': {
-      const folder = cleanFolder(msg.folder);
+    case 'fg-download':
       Promise.all(
         msg.items.map(async ({ url, name }) => {
           try {
-            pending.set(url, { folder, name: name || '' });
+            pendingNames.set(url, name || '');
             await chrome.downloads.download({ url, conflictAction: 'uniquify' });
             return { url, ok: true };
           } catch (e) {
-            pending.delete(url);
+            pendingNames.delete(url);
             return { url, ok: false, error: String(e && e.message ? e.message : e) };
           }
         })
       ).then((results) => sendResponse({ results }));
       return true;
-    }
   }
 });

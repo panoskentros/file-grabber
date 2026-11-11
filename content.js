@@ -42,7 +42,7 @@
   }
 
   const bg = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
-  const PREF_DEFAULTS = { autoDownload: false, autoMode: 'files', folderMode: 'title', customFolder: '', recentFolders: [], downloadsDir: '' };
+  const PREF_DEFAULTS = { autoDownload: false, autoMode: 'files', downloadsDir: '' };
   const getPrefs = () => chrome.storage.local.get(PREF_DEFAULTS).catch(() => PREF_DEFAULTS);
   const setPrefs = (o) => chrome.storage.local.set(o).catch(() => {});
 
@@ -174,7 +174,7 @@
     const t = label.trim().replace(SAFE, '_');
     return FGMatch.EXT_RE.test(t) ? t : '';
   };
-  const titleFolder = () => document.title.replace(SAFE, '_').replace(/\s+/g, ' ').trim().replace(/^\.+|[. ]+$/g, '').slice(0, 60);
+  const zipBaseName = () => document.title.replace(SAFE, '_').replace(/\s+/g, ' ').trim().replace(/^\.+|[. ]+$/g, '').slice(0, 60);
 
   // No OCR match: fall back to the file-like links that sit inside the selected area.
   function domFallback(candidates) {
@@ -261,12 +261,12 @@
     if (files.length) {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(buildZip(files));
-      a.download = (titleFolder() || 'files') + '.zip';
+      a.download = (zipBaseName() || 'files') + '.zip';
       (document.body || document.documentElement).append(a);
       a.click();
       setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 10000);
     }
-    if (failed.length) await bg({ type: 'fg-download', items: failed.map((m) => ({ url: m.href, name: downloadName(m.label) })), folder: '' });
+    if (failed.length) await bg({ type: 'fg-download', items: failed.map((m) => ({ url: m.href, name: downloadName(m.label) })) });
     await bg({ type: 'fg-acc-clear' });
     showStatus(
       files.length
@@ -278,7 +278,7 @@
 
   async function doDownload(items) {
     showStatus('Starting downloads…');
-    const res = await bg({ type: 'fg-download', items: items.map((m) => ({ url: m.href, name: downloadName(m.label) })), folder: '' });
+    const res = await bg({ type: 'fg-download', items: items.map((m) => ({ url: m.href, name: downloadName(m.label) })) });
     await bg({ type: 'fg-acc-clear' });
     const failed = ((res && res.results) || []).filter((r) => !r.ok);
     const ok = items.length - failed.length;

@@ -1,7 +1,7 @@
 // Injected on demand: area selector (or pasted/dropped screenshot), link matching and the review panel (shadow root).
 (function () {
-  if (window.__fgLoaded) return;
-  window.__fgLoaded = true;
+  if (window.__fgLoadedV2) return;
+  window.__fgLoadedV2 = true;
 
   let host = null; // element holding the shadow root
   let lastRect = null;
@@ -27,6 +27,15 @@
     button.primary { background: #2f7df6; color: #fff; }
     button:disabled { opacity: .5; cursor: default; }
   `;
+
+  // Top-frame links, read here (reliable); the background adds links from iframes.
+  function topLinks(rect) {
+    try {
+      return { candidates: globalThis.fgCollectInPage(rect), problem: '' };
+    } catch (e) {
+      return { candidates: [], problem: String(e && e.message ? e.message : e) };
+    }
+  }
 
   const bg = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
   const getPrefs = () => chrome.storage.local.get({ autoDownload: false, folderMode: 'title', customFolder: '' }).catch(() => ({ autoDownload: false, folderMode: 'title', customFolder: '' }));
@@ -62,6 +71,7 @@
       row.append(el('button', { textContent: 'Close', onclick: unmount }));
       panel.append(row);
     }
+    panel.append(el('div', { className: 'sub', textContent: 'File Grabber v' + chrome.runtime.getManifest().version }));
     root.append(panel);
   }
 
@@ -97,7 +107,7 @@
         cleanup();
         lastRect = null;
         showStatus('Reading the screenshot…');
-        bg({ type: 'fg-image', dataUrl: fr.result });
+        bg({ type: 'fg-image', dataUrl: fr.result, ...topLinks(null) });
       };
       fr.readAsDataURL(file);
       return true;
@@ -140,7 +150,7 @@
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         await new Promise((r) => setTimeout(r, 60));
         showStatus('Reading the screenshot…');
-        bg({ type: 'fg-capture', rect, viewportWidth: window.innerWidth });
+        bg({ type: 'fg-capture', rect, viewportWidth: window.innerWidth, ...topLinks(rect) });
       };
       window.addEventListener('mousemove', move, true);
       window.addEventListener('mouseup', up, true);
@@ -249,6 +259,7 @@
     const more = el('button', { textContent: 'Add another screenshot', onclick: startSelection });
     const cancel = el('button', { textContent: 'Cancel', onclick: async () => { await bg({ type: 'fg-acc-clear' }); unmount(); } });
     panel.append(el('div', { className: 'btns' }, dl, more, cancel));
+    panel.append(el('div', { className: 'sub', textContent: 'File Grabber v' + chrome.runtime.getManifest().version }));
   }
 
   chrome.runtime.onMessage.addListener((msg) => {

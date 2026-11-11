@@ -12,90 +12,39 @@ async function ensureOffscreen() {
 
 chrome.action.onClicked.addListener(async (tab) => {
   try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['match.js', 'content.js'] });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['match.js', 'collect.js', 'content.js'] });
     await chrome.tabs.sendMessage(tab.id, { type: 'fg-start' });
   } catch (e) {
     console.warn('File Grabber cannot run on this page:', e);
   }
 });
 
-// Runs inside every frame of the page (must be self-contained).
-function collectInPage(rect) {
-  let ox = 0, oy = 0, known = true;
+// Links in sub-frames (iframes), best effort: the top frame is collected by the content script itself.
+async function collectSubframes(tabId, rect) {
   try {
-    let w = window;
-    while (w !== w.top) {
-      const fe = w.frameElement; // null for cross-origin frames
-      if (!fe) { known = false; break; }
-      const r = fe.getBoundingClientRect();
-      ox += r.left + fe.clientLeft;
-      oy += r.top + fe.clientTop;
-      w = w.parent;
-    }
-  } catch (e) { known = false; }
-
-  const extRe = /\.[a-z0-9]{2,5}$/i;
-  const out = [];
-  const seen = new Set();
-  for (const a of document.querySelectorAll('a[href]')) {
-    if (!/^https?:/i.test(a.href)) continue;
-    const text = a.textContent.replace(/\s+/g, ' ').trim();
-    let seg = '';
-    try { seg = decodeURIComponent(new URL(a.href).pathname.split('/').filter(Boolean).pop() || ''); } catch (e) {}
-    const ok = (l) => l && l.length >= 4 && l.length <= 200;
-    const hasText = ok(text);
-    const labels = [hasText ? text : '', a.getAttribute('download') || '', a.title || '', seg].filter(ok);
-    if (!labels.length) continue;
-    const key = a.href + '|' + labels[0];
-    if (seen.has(key)) continue;
-    seen.add(key);
-    let inRegion = false;
-    if (rect && known) {
-      const r = a.getBoundingClientRect();
-      const l = r.left + ox, t = r.top + oy, rr = r.right + ox, b = r.bottom + oy;
-      inRegion = rr > rect.x && l < rect.x + rect.w && b > rect.y && t < rect.y + rect.h;
-    }
-    const fileLike =
-      extRe.test(text) || /\.[a-z0-9]{2,5}($|[?#])/i.test(a.pathname || '') || /(pluginfile|download|attachment|\/file\b|\/document)/i.test(a.href);
-    out.push({ href: a.href, labels, hasText, inRegion, fileLike });
-  }
-  return out;
-}
-
-// Returns { candidates, problem }. One inaccessible frame makes an allFrames call fail as a whole,
-// so fall back to the top frame (and per frame) instead of returning nothing.
-async function collectCandidates(tabId, rect) {
-  const run = (target) => chrome.scripting.executeScript({ target, func: collectInPage, args: [rect || null] });
-  let frames = [];
-  let problem = '';
-  try {
-    frames = await run({ tabId, allFrames: true });
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['collect.js'] });
+    const frames = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: (r) => globalThis.fgCollectInPage(r),
+      args: [rect || null]
+    });
+    return frames.filter((f) => f.frameId !== 0).flatMap((f) => f.result || []);
   } catch (e) {
-    problem = String(e && e.message ? e.message : e);
-    console.warn('allFrames link collection failed, trying the top frame only:', e);
-    try {
-      frames = await run({ tabId });
-      problem = ''; // top frame is what matters; iframes were skipped
-    } catch (e2) {
-      problem = String(e2 && e2.message ? e2.message : e2);
-    }
+    console.warn('Could not read links from iframes:', e);
+    return [];
   }
-  const seen = new Set();
-  const candidates = [];
-  for (const f of frames) {
-    for (const c of f.result || []) {
-      const key = c.href + '|' + c.labels[0];
-      if (!seen.has(key)) { seen.add(key); candidates.push(c); }
-    }
-  }
-  if (!candidates.length && !problem) problem = 'the page has no links the extension can see (it may be inside a frame it cannot access)';
-  return { candidates, problem };
 }
 
-async function runOcr(tab, { rect, viewportWidth, dataUrl }) {
+async function runOcr(tab, { rect, viewportWidth, dataUrl, candidates: top, problem: topProblem }) {
   const tabId = tab.id;
   const send = (msg) => chrome.tabs.sendMessage(tabId, msg).catch(() => {});
-  const { candidates, problem } = await collectCandidates(tabId, rect);
+  const seen = new Set();
+  const candidates = [];
+  for (const c of [...(top || []), ...(await collectSubframes(tabId, rect))]) {
+    const key = c.href + '|' + c.labels[0];
+    if (!seen.has(key)) { seen.add(key); candidates.push(c); }
+  }
+  const problem = candidates.length ? '' : topProblem || 'no links were found on this page (are the files inside an embedded frame?)';
   try {
     if (!dataUrl) dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     await ensureOffscreen();
@@ -142,10 +91,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch(() => {});
       break;
     case 'fg-capture':
-      if (sender.tab) runOcr(sender.tab, { rect: msg.rect, viewportWidth: msg.viewportWidth });
+      if (sender.tab) runOcr(sender.tab, { rect: msg.rect, viewportWidth: msg.viewportWidth, candidates: msg.candidates, problem: msg.problem });
       break;
     case 'fg-image':
-      if (sender.tab) runOcr(sender.tab, { rect: null, dataUrl: msg.dataUrl });
+      if (sender.tab) runOcr(sender.tab, { rect: null, dataUrl: msg.dataUrl, candidates: msg.candidates, problem: msg.problem });
       break;
     case 'fg-acc-get':
       accGet().then((items) => sendResponse({ items }));

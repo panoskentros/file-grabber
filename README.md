@@ -19,7 +19,7 @@ links on the page and offers to download them.
 - **Fast** – the OCR engine is preloaded when you open the selector, and extra OCR passes are skipped once every link in the selection was found.
 
 ## Notes
-- OCR runs locally (Tesseract.js, bundled in `lib/`, English data); nothing is sent anywhere.
+- OCR runs locally (Tesseract.js, bundled in `lib/`, Greek + English data); nothing is sent anywhere.
 - Matching ignores file extensions and tolerates small OCR errors (≥85% similarity).
 - Downloads use your logged-in session.
 

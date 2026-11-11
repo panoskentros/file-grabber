@@ -3,7 +3,7 @@
 let workerPromise = null;
 function getWorker() {
   if (!workerPromise) {
-    workerPromise = Tesseract.createWorker('eng', 1, {
+    workerPromise = Tesseract.createWorker(['ell', 'eng'], 1, {
       workerPath: chrome.runtime.getURL('lib/worker.min.js'),
       corePath: chrome.runtime.getURL('lib/'),
       langPath: chrome.runtime.getURL('lib/lang/'),
@@ -70,20 +70,24 @@ async function ocr(job) {
   const candidates = job.candidates || [];
   // Links the page shows inside the selection: once OCR has found all of them there is no need for more passes.
   const expected = candidates.filter((c) => c.inRegion && c.fileLike);
-  const seen = new Set();
-  const lines = [];
+  const best = new Map(); // line text -> most times it appeared in a single pass (identical rows are real, keep them)
+  const order = [];
+  let lines = [];
   // Different layout modes miss different lines (e.g. the first row of a list), so union them.
   for (const psm of ['6', '4', '11']) {
     // A fixed DPI stops Tesseract from logging "Estimating resolution as …" on every run.
     await worker.setParameters({ tessedit_pageseg_mode: psm, user_defined_dpi: '300' });
     const { data } = await worker.recognize(canvas);
+    const counts = new Map();
     for (const l of data.text.split('\n')) {
       const t = l.trim();
-      if (t && !seen.has(t)) {
-        seen.add(t);
-        lines.push(t);
-      }
+      if (t) counts.set(t, (counts.get(t) || 0) + 1);
     }
+    for (const [t, c] of counts) {
+      if (!best.has(t)) order.push(t);
+      best.set(t, Math.max(best.get(t) || 0, c));
+    }
+    lines = order.flatMap((t) => Array(best.get(t)).fill(t));
     if (expected.length) {
       const found = new Set(FGMatch.matchLines(lines, candidates).matches.map((m) => m.href));
       if (expected.every((c) => found.has(c.href))) break;

@@ -31,3 +31,23 @@ test('does not match unrelated names', () => {
   const r = matchLines(['11_greedyexer.pdf'], [cand('10_greedalg.pdf')]);
   assert.strictEqual(r.matches.length, 0);
 });
+
+test('Greek labels match, and a year alone is not enough', () => {
+  const greek = (n) => ({ href: 'u/' + n, labels: [n], hasText: true, inRegion: true });
+  const r = matchLines(['Β. Σεπτέμβριος 2021 277.95 ΚΒ', 'Ε. Ιούνιος 2024 152.46 ΚΒ', 'lavoudaplog 2020'], [greek('Σεπτέμβριος 2021'), greek('Ιούνιος 2024'), greek('Ιανουάριος 2020')]);
+  assert.deepStrictEqual(r.matches.map((m) => m.label).sort(), ['Ιούνιος 2024', 'Σεπτέμβριος 2021']);
+  assert.strictEqual(matchLines(['report 2020'], [cand('2020')]).matches.length, 0);
+});
+
+test('rows that differ by one misread digit each get their own line', () => {
+  const greek = (n) => ({ href: 'u/' + n, labels: [n], hasText: true, inRegion: true });
+  const r = matchLines(['Σεπτέμβριος 2025', 'Σεπτέμβριος 2025'], [greek('Σεπτέμβριος 2023'), greek('Σεπτέμβριος 2025')]);
+  assert.strictEqual(r.matches.length, 2);
+});
+
+test('does not grab look-alike links outside the selection', () => {
+  const inside = { href: 'u/in', labels: ['Φεβρουάριος 2025'], hasText: true, inRegion: true };
+  const outside = { href: 'u/out', labels: ['Φεβρουάριος 2024'], hasText: true, inRegion: false };
+  const r = matchLines(['Φεβρουάριος 2025'], [inside, outside]);
+  assert.deepStrictEqual(r.matches.map((m) => m.href), ['u/in']);
+});

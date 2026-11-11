@@ -13,6 +13,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@tesseract.js-data/ell": "^1.0.0",
     "@tesseract.js-data/eng": "^1.0.0",
     "tesseract.js": "^5.1.1"
   }

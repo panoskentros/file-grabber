@@ -7,9 +7,10 @@
     return s
       .toLowerCase()
       .normalize('NFKD')
-      .replace(/[̀-ͯ]/g, '')
+      .replace(/[\u0300-\u036f]/g, '') // accents (incl. Greek tonos)
+      .replace(/\u03c2/g, '\u03c3') // final sigma
       .replace(/[|!]/g, 'l')
-      .replace(/[^a-z0-9]/g, '');
+      .replace(/[^a-z0-9\u03b1-\u03c9]/g, '');
   }
 
   // Best edit distance of `pattern` against any substring of `text` (Sellers' algorithm).
@@ -37,6 +38,7 @@
     const base = norm(label.replace(EXT_RE, ''));
     const hay = norm(line);
     if (base.length < 4 || hay.length < 4) return 0;
+    if (base.replace(/[0-9]/g, '').length < 3) return 0; // a label that is mostly digits (e.g. a year) is not distinctive
     return 1 - approxContains(base, hay) / base.length;
   }
 
@@ -47,30 +49,43 @@
 
   // candidates: [{ href, labels: string[], hasText?: boolean, inRegion: boolean }]
   // labels[0] is the visible link text when hasText is true (preferred over e.g. an icon link to the same file).
+  // Matching is one-to-one (each OCR line serves one file), best scores first, so rows that differ by one
+  // misread character (e.g. "2023" read as "2025") do not both claim the same line.
   // Returns { matches: [{ href, label, line, score }], unmatched: string[] } (unmatched = file-like lines only)
   function matchLines(lines, candidates, threshold = 0.85) {
-    const byHref = new Map();
-    const unmatched = [];
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (norm(line).length < 4) continue;
-      let best = null;
-      for (const c of candidates) {
+    const clean = lines.map((l) => l.trim());
+    const anyInRegion = candidates.some((c) => c.inRegion);
+    const pairs = [];
+    const lineHasCandidate = new Array(clean.length).fill(false);
+    candidates.forEach((c, ci) => {
+      // Links outside the selected area need a (near) exact match so look-alike links elsewhere are not grabbed.
+      const need = !anyInRegion || c.inRegion ? threshold : Math.max(threshold, 0.97);
+      clean.forEach((line, li) => {
+        if (norm(line).length < 4) return;
         c.labels.forEach((label, idx) => {
           const s = score(label, line);
           if (s < threshold) return;
+          lineHasCandidate[li] = true;
+          if (s < need) return;
           const rank = s + (c.hasText && idx === 0 ? 1e-3 : 0) + (c.inRegion ? 1e-4 : 0);
-          if (!best || rank > best.rank) best = { href: c.href, label, line, score: s, rank };
+          pairs.push({ ci, li, label, s, rank });
         });
-      }
-      if (best) {
-        const old = byHref.get(best.href);
-        if (!old || best.score > old.score) byHref.set(best.href, best);
-      } else if (looksLikeFileName(line)) {
-        unmatched.push(line);
-      }
+      });
+    });
+    pairs.sort((x, y) => y.rank - x.rank);
+    const usedLines = new Set(), usedHrefs = new Set(), usedKeys = new Set();
+    const matches = [];
+    for (const p of pairs) {
+      const c = candidates[p.ci];
+      const key = norm(p.label.replace(EXT_RE, '')); // icon link + text link to the same file share a label
+      if (usedLines.has(p.li) || usedHrefs.has(c.href) || usedKeys.has(key)) continue;
+      usedLines.add(p.li);
+      usedHrefs.add(c.href);
+      usedKeys.add(key);
+      matches.push({ href: c.href, label: p.label, line: clean[p.li], score: p.s });
     }
-    return { matches: [...byHref.values()], unmatched };
+    const unmatched = clean.filter((l, i) => !lineHasCandidate[i] && norm(l).length >= 4 && looksLikeFileName(l));
+    return { matches, unmatched };
   }
 
   const api = { norm, score, matchLines, looksLikeFileName, EXT_RE };

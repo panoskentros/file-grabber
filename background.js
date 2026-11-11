@@ -74,6 +74,7 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   const { folder, name } = pending.get(key);
   pending.delete(key);
   const base = name || item.filename.split(/[\\/]/).pop();
+  chrome.storage.local.set({ downloadsDir: item.filename.replace(/[\\/][^\\/]*$/, '') }); // remember the real default folder to show it in the panel
   suggest({ filename: folder ? `${folder}/${base}` : base, conflictAction: 'uniquify' });
 });
 

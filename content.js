@@ -21,7 +21,8 @@
     .note { color: #444; font-size: 12px; margin-bottom: 6px; }
     .miss { color: #a15c00; font-size: 12px; margin-top: 8px; word-break: break-all; }
     .opts { margin-top: 10px; display: grid; gap: 6px; font-size: 13px; }
-    .opts input[type=text] { width: 100%; padding: 5px 7px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; }
+    .opts select, .opts input[type=text] { width: 100%; padding: 5px 7px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; }
+    .path { font-size: 12px; color: #444; word-break: break-all; background: #f3f5f8; border-radius: 6px; padding: 6px 8px; margin-top: 10px; }
     .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     button { border: 0; border-radius: 8px; padding: 8px 12px; font-size: 14px; cursor: pointer; background: #e8e8e8; color: #111; }
     button.primary { background: #2f7df6; color: #fff; }
@@ -38,7 +39,8 @@
   }
 
   const bg = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
-  const getPrefs = () => chrome.storage.local.get({ autoDownload: false, folderMode: 'title', customFolder: '' }).catch(() => ({ autoDownload: false, folderMode: 'title', customFolder: '' }));
+  const PREF_DEFAULTS = { autoDownload: false, folderMode: 'title', customFolder: '', recentFolders: [], downloadsDir: '' };
+  const getPrefs = () => chrome.storage.local.get(PREF_DEFAULTS).catch(() => PREF_DEFAULTS);
   const setPrefs = (o) => chrome.storage.local.set(o).catch(() => {});
 
   function mount() {
@@ -179,7 +181,9 @@
   async function doDownload(items, folder, prefs) {
     if (folder !== undefined) {
       const mode = folder === '' ? 'none' : folder === titleFolder() ? 'title' : 'custom';
-      await setPrefs({ folderMode: mode, customFolder: mode === 'custom' ? folder : prefs.customFolder });
+      const recent = (prefs.recentFolders || []).filter((f) => f !== folder);
+      if (mode === 'custom') recent.unshift(folder);
+      await setPrefs({ folderMode: mode, customFolder: mode === 'custom' ? folder : prefs.customFolder, recentFolders: recent.slice(0, 6) });
     }
     showStatus('Starting downloads…');
     const res = await bg({ type: 'fg-download', items: items.map((m) => ({ url: m.href, name: downloadName(m.label) })), folder });
@@ -239,11 +243,36 @@
     });
     if (unmatched.length) panel.append(el('div', { className: 'miss', textContent: 'No link found for: ' + unmatched.join(' · ') }));
 
-    const folder = el('input', { type: 'text', value: folderDefault, placeholder: '(Downloads folder itself)' });
+    // Folder picker: a dropdown (Chrome extensions cannot browse the disk, only save below the Downloads folder).
+    const NEW = '\u0000new';
+    const base = prefs.downloadsDir || 'Downloads';
+    const choices = [['', 'Downloads (default)']];
+    const t = titleFolder();
+    if (t) choices.push([t, t + ' (page title)']);
+    for (const f of [...(prefs.recentFolders || []), folderDefault]) if (f && !choices.some((c) => c[0] === f)) choices.push([f, f]);
+    const select = el('select');
+    for (const [v, label] of choices) select.append(el('option', { value: v, textContent: label }));
+    select.append(el('option', { value: NEW, textContent: 'New folder…' }));
+    select.value = folderDefault;
+    const typed = el('input', { type: 'text', placeholder: 'Folder name (e.g. Algorithms/Slides)' });
+    typed.style.display = 'none';
+    const path = el('div', { className: 'path' });
+    const chosenFolder = () => (select.value === NEW ? typed.value.trim() : select.value);
+    const refreshPath = () => {
+      const f = chosenFolder();
+      path.textContent = f ? `${base}/${f}` : `${base}  (default)`;
+      typed.style.display = select.value === NEW ? '' : 'none';
+    };
+    select.onchange = () => { refreshPath(); if (select.value === NEW) typed.focus(); };
+    typed.oninput = refreshPath;
+    refreshPath();
     const auto = el('input', { type: 'checkbox' });
     panel.append(
       el('div', { className: 'opts' },
-        el('label', {}, 'Save in subfolder of Downloads', folder),
+        el('div', { className: 'sub', textContent: 'Files will be saved to:' }),
+        path,
+        el('label', {}, 'Save in folder', select),
+        typed,
         el('label', {}, auto, ' Download without asking next time')
       )
     );
@@ -254,7 +283,7 @@
       if (!chosen.length) return;
       dl.disabled = true;
       if (auto.checked) await setPrefs({ autoDownload: true });
-      doDownload(chosen, folder.value.trim(), prefs);
+      doDownload(chosen, chosenFolder(), prefs);
     };
     const more = el('button', { textContent: 'Add another screenshot', onclick: startSelection });
     const cancel = el('button', { textContent: 'Cancel', onclick: async () => { await bg({ type: 'fg-acc-clear' }); unmount(); } });

@@ -74,7 +74,8 @@ async function ocr(job) {
   const lines = [];
   // Different layout modes miss different lines (e.g. the first row of a list), so union them.
   for (const psm of ['6', '4', '11']) {
-    await worker.setParameters({ tessedit_pageseg_mode: psm });
+    // A fixed DPI stops Tesseract from logging "Estimating resolution as …" on every run.
+    await worker.setParameters({ tessedit_pageseg_mode: psm, user_defined_dpi: '300' });
     const { data } = await worker.recognize(canvas);
     for (const l of data.text.split('\n')) {
       const t = l.trim();

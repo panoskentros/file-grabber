@@ -181,6 +181,95 @@
     return [...byHref.values()].map((m) => ({ href: m.href, label: m.label, sub: 'link inside your selection (not read from the screenshot)' }));
   }
 
+  // ---- "Save all": fetch every file and hand Chrome ONE zip to save ----
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+  function crc32(buf) {
+    let c = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  }
+  function buildZip(files) { // files: [{ name, data: Uint8Array }], stored (no compression: PDFs are compressed already)
+    const enc = new TextEncoder();
+    const d = new Date();
+    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    const parts = [], central = [];
+    let offset = 0;
+    for (const f of files) {
+      const name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+      lh.setUint16(10, time, true); lh.setUint16(12, date, true); lh.setUint32(14, crc, true);
+      lh.setUint32(18, size, true); lh.setUint32(22, size, true); lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+      parts.push(lh.buffer, name, f.data);
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
+      ch.setUint16(12, time, true); ch.setUint16(14, date, true); ch.setUint32(16, crc, true);
+      ch.setUint32(20, size, true); ch.setUint32(24, size, true); ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+      central.push(ch.buffer, name);
+      offset += 30 + name.length + size;
+    }
+    const cdSize = central.reduce((n, p) => n + (p.byteLength !== undefined ? p.byteLength : p.length), 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+    end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+    return new Blob([...parts, ...central, end.buffer], { type: 'application/zip' });
+  }
+  function nameFromResponse(res) {
+    const cd = res.headers.get('content-disposition') || '';
+    let m = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(cd);
+    if (m) { try { return decodeURIComponent(m[1]).replace(SAFE, '_'); } catch (e) {} }
+    m = /filename\s*=\s*"?([^";]+)"?/i.exec(cd);
+    if (m) return m[1].trim().replace(SAFE, '_');
+    try { return decodeURIComponent(new URL(res.url).pathname.split('/').filter(Boolean).pop() || '').replace(SAFE, '_'); } catch (e) { return ''; }
+  }
+  function uniqueIn(used, name) {
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : '';
+    let n = 0, cand = name;
+    while (used.has(cand.toLowerCase())) cand = `${stem} (${++n})${ext}`;
+    used.add(cand.toLowerCase());
+    return cand;
+  }
+  async function saveAllAsZip(items) {
+    const files = [], failed = [], used = new Set();
+    for (let i = 0; i < items.length; i++) {
+      showStatus(`Fetching ${i + 1} of ${items.length}…`);
+      try {
+        const res = await fetch(items[i].href, { credentials: 'include' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = new Uint8Array(await res.arrayBuffer());
+        files.push({ name: uniqueIn(used, downloadName(items[i].label) || nameFromResponse(res) || 'file'), data });
+      } catch (e) {
+        failed.push(items[i]); // e.g. a link on another site: Chrome downloads it separately below
+      }
+    }
+    if (files.length) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(buildZip(files));
+      a.download = (titleFolder() || 'files') + '.zip';
+      (document.body || document.documentElement).append(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 10000);
+    }
+    if (failed.length) await bg({ type: 'fg-download', items: failed.map((m) => ({ url: m.href, name: downloadName(m.label) })), folder: '' });
+    await bg({ type: 'fg-acc-clear' });
+    showStatus(
+      files.length
+        ? `Saved ${files.length} file${files.length > 1 ? 's' : ''} in one zip` + (failed.length ? `; ${failed.length} downloaded separately` : '')
+        : failed.length ? `Could not fetch the files; started ${failed.length} normal downloads` : 'Nothing to save',
+      []
+    );
+  }
+
   async function doDownload(items) {
     showStatus('Starting downloads…');
     const res = await bg({ type: 'fg-download', items: items.map((m) => ({ url: m.href, name: downloadName(m.label) })), folder: '' });
@@ -254,9 +343,16 @@
       if (auto.checked) await setPrefs({ autoDownload: true });
       doDownload(chosen);
     };
+    const zipBtn = el('button', { textContent: 'Save all as ZIP' });
+    zipBtn.onclick = async () => {
+      const chosen = items.filter((_, i) => boxes[i].checked);
+      if (!chosen.length) return;
+      zipBtn.disabled = dl.disabled = true;
+      saveAllAsZip(chosen);
+    };
     const more = el('button', { textContent: 'Add another screenshot', onclick: startSelection });
     const cancel = el('button', { textContent: 'Cancel', onclick: async () => { await bg({ type: 'fg-acc-clear' }); unmount(); } });
-    panel.append(el('div', { className: 'btns' }, dl, more, cancel));
+    panel.append(el('div', { className: 'btns' }, dl, zipBtn, more, cancel));
     panel.append(el('div', { className: 'sub', textContent: 'File Grabber v' + chrome.runtime.getManifest().version }));
   }
 

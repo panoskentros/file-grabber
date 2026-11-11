@@ -187,7 +187,7 @@
   }
 
   // ---------- 3. review panel ----------
-  async function showResults(lines, candidates, error) {
+  async function showResults(lines, candidates, error, problem) {
     let { matches, unmatched } = FGMatch.matchLines(lines, candidates || []);
     let note = '';
     let fresh = matches.map((m) => ({ href: m.href, label: m.label, sub: `read as “${m.line}” · ${Math.round(m.score * 100)}%` }));
@@ -207,8 +207,10 @@
       showStatus(error ? 'Could not read the screenshot: ' + error : 'No matching links found', [
         { label: 'Try again', onclick: startSelection }
       ]);
-      if (lines.length && host) host.shadowRoot.querySelector('.panel').insertBefore(
-        el('div', { className: 'miss', textContent: 'Text read: ' + lines.join(' · ') }), host.shadowRoot.querySelector('.btns'));
+      const panel = host.shadowRoot.querySelector('.panel');
+      const btns = panel.querySelector('.btns');
+      if (problem) panel.insertBefore(el('div', { className: 'note', textContent: 'Could not read the links on this page: ' + problem }), btns);
+      if (lines.length) panel.insertBefore(el('div', { className: 'miss', textContent: 'Text read: ' + lines.join(' · ') }), btns);
       return;
     }
 
@@ -251,7 +253,7 @@
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'fg-start') startSelection();
-    else if (msg.type === 'fg-ocr-result') showResults(msg.lines, msg.candidates, null);
-    else if (msg.type === 'fg-ocr-error') showResults([], msg.candidates, msg.error);
+    else if (msg.type === 'fg-ocr-result') showResults(msg.lines, msg.candidates, null, msg.problem);
+    else if (msg.type === 'fg-ocr-error') showResults([], msg.candidates, msg.error, msg.problem);
   });
 })();

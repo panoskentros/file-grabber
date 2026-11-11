@@ -62,36 +62,48 @@ function collectInPage(rect) {
   return out;
 }
 
+// Returns { candidates, problem }. One inaccessible frame makes an allFrames call fail as a whole,
+// so fall back to the top frame (and per frame) instead of returning nothing.
 async function collectCandidates(tabId, rect) {
+  const run = (target) => chrome.scripting.executeScript({ target, func: collectInPage, args: [rect || null] });
+  let frames = [];
+  let problem = '';
   try {
-    const frames = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: collectInPage, args: [rect || null] });
-    const seen = new Set();
-    const all = [];
-    for (const f of frames) {
-      for (const c of f.result || []) {
-        const key = c.href + '|' + c.labels[0];
-        if (!seen.has(key)) { seen.add(key); all.push(c); }
-      }
-    }
-    return all;
+    frames = await run({ tabId, allFrames: true });
   } catch (e) {
-    console.warn('Could not read links from the page:', e);
-    return [];
+    problem = String(e && e.message ? e.message : e);
+    console.warn('allFrames link collection failed, trying the top frame only:', e);
+    try {
+      frames = await run({ tabId });
+      problem = ''; // top frame is what matters; iframes were skipped
+    } catch (e2) {
+      problem = String(e2 && e2.message ? e2.message : e2);
+    }
   }
+  const seen = new Set();
+  const candidates = [];
+  for (const f of frames) {
+    for (const c of f.result || []) {
+      const key = c.href + '|' + c.labels[0];
+      if (!seen.has(key)) { seen.add(key); candidates.push(c); }
+    }
+  }
+  if (!candidates.length && !problem) problem = 'the page has no links the extension can see (it may be inside a frame it cannot access)';
+  return { candidates, problem };
 }
 
 async function runOcr(tab, { rect, viewportWidth, dataUrl }) {
   const tabId = tab.id;
   const send = (msg) => chrome.tabs.sendMessage(tabId, msg).catch(() => {});
-  const candidates = await collectCandidates(tabId, rect);
+  const { candidates, problem } = await collectCandidates(tabId, rect);
   try {
     if (!dataUrl) dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     await ensureOffscreen();
     const res = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'ocr', dataUrl, rect: rect || null, viewportWidth, candidates });
     if (!res || res.error) throw new Error(res ? res.error : 'No response from OCR page');
-    await send({ type: 'fg-ocr-result', lines: res.lines, candidates });
+    await send({ type: 'fg-ocr-result', lines: res.lines, candidates, problem });
   } catch (e) {
-    await send({ type: 'fg-ocr-error', error: String(e && e.message ? e.message : e), candidates });
+    await send({ type: 'fg-ocr-error', error: String(e && e.message ? e.message : e), candidates, problem });
   }
 }
 

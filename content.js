@@ -330,7 +330,7 @@
     });
     if (unmatched.length) panel.append(el('div', { className: 'miss', textContent: 'No link found for: ' + unmatched.join(' · ') }));
 
-    const path = el('div', { className: 'path', textContent: 'Save to: ' + (prefs.downloadsDir || 'Downloads') + ' (default)' });
+    const path = el('div', { className: 'path', textContent: 'Save to: ' + (/[\\/]/.test(prefs.downloadsDir || '') ? prefs.downloadsDir : 'Downloads') + ' (default)' });
     const auto = el('input', { type: 'checkbox', checked: !!prefs.autoDownload });
     auto.onchange = () => setPrefs({ autoDownload: auto.checked }); // saved at once, whatever button is pressed later
     panel.append(

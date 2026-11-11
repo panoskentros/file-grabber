@@ -57,6 +57,7 @@ async function runOcr(tab, { rect, viewportWidth, dataUrl, candidates: top, prob
 }
 
 // ---- downloads ----
+const ours = new Set(); // ids of downloads we started
 const pendingNames = new Map(); // url -> file name taken from the link label (empty = let Chrome decide)
 
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
@@ -64,8 +65,15 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   if (!key) return; // not ours
   const name = pendingNames.get(key);
   pendingNames.delete(key);
-  chrome.storage.local.set({ downloadsDir: item.filename.replace(/[\\/][^\\/]*$/, '') }); // real default folder, shown in the panel
   suggest(name ? { filename: name, conflictAction: 'uniquify' } : { conflictAction: 'uniquify' });
+});
+
+// Once one of our downloads finishes, its absolute path tells us the real download folder (shown in the panel).
+chrome.downloads.onChanged.addListener(async (delta) => {
+  if (!ours.has(delta.id) || !delta.state || delta.state.current !== 'complete') return;
+  ours.delete(delta.id);
+  const [item] = await chrome.downloads.search({ id: delta.id });
+  if (item && /[\\/]/.test(item.filename)) chrome.storage.local.set({ downloadsDir: item.filename.replace(/[\\/][^\\/]*$/, '') });
 });
 
 // ---- results collected over several screenshots / pages ----
@@ -101,7 +109,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         msg.items.map(async ({ url, name }) => {
           try {
             pendingNames.set(url, name || '');
-            await chrome.downloads.download({ url, conflictAction: 'uniquify' });
+            ours.add(await chrome.downloads.download({ url, conflictAction: 'uniquify' }));
             return { url, ok: true };
           } catch (e) {
             pendingNames.delete(url);

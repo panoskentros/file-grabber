@@ -76,7 +76,6 @@
       row.append(el('button', { textContent: 'Close', onclick: unmount }));
       panel.append(row);
     }
-    panel.append(el('div', { className: 'sub', textContent: 'File Grabber v' + chrome.runtime.getManifest().version }));
     root.append(panel);
   }
 
@@ -93,6 +92,13 @@
         (collected.length ? ` · ${collected.length} collected so far` : '')
     });
     root.append(shade, hint);
+    if ((await getPrefs()).autoDownload) {
+      const off = el('button', { textContent: 'Auto-download is on — turn it off' });
+      off.style.cssText = 'position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:2147483647;';
+      off.onclick = async (e) => { e.stopPropagation(); await setPrefs({ autoDownload: false }); off.remove(); };
+      off.onmousedown = (e) => e.stopPropagation();
+      root.append(off);
+    }
     let x0 = 0, y0 = 0;
 
     const cleanup = () => {
@@ -266,9 +272,7 @@
       files.length
         ? `Saved ${files.length} file${files.length > 1 ? 's' : ''} in one zip` + (failed.length ? `; ${failed.length} downloaded separately` : '')
         : failed.length ? `Could not fetch the files; started ${failed.length} normal downloads` : 'Nothing to save',
-      (await getPrefs()).autoDownload
-        ? [{ label: 'Ask me before downloading', onclick: async () => { await setPrefs({ autoDownload: false }); unmount(); } }]
-        : []
+      []
     );
   }
 
@@ -280,9 +284,7 @@
     const ok = items.length - failed.length;
     showStatus(
       failed.length ? `Started ${ok}, failed ${failed.length}: ${failed[0].error}` : `Started ${ok} download${ok > 1 ? 's' : ''}`,
-      (await getPrefs()).autoDownload
-        ? [{ label: 'Ask me before downloading', onclick: async () => { await setPrefs({ autoDownload: false }); unmount(); } }]
-        : []
+      []
     );
   }
 
@@ -357,7 +359,6 @@
     const more = el('button', { textContent: 'Add another screenshot', onclick: startSelection });
     const cancel = el('button', { textContent: 'Cancel', onclick: async () => { await bg({ type: 'fg-acc-clear' }); unmount(); } });
     panel.append(el('div', { className: 'btns' }, dl, zipBtn, more, cancel));
-    panel.append(el('div', { className: 'sub', textContent: 'File Grabber v' + chrome.runtime.getManifest().version }));
   }
 
   chrome.runtime.onMessage.addListener((msg) => {

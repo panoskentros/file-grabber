@@ -164,7 +164,6 @@
 
   // ---------- 2. helpers ----------
   const SAFE = /[\\/:*?"<>|\u0000-\u001f]/g;
-  const SAFE_PATH = /[\\:*?"<>|\u0000-\u001f]/g; // like SAFE but keeps / for nested folders
   const downloadName = (label) => {
     const t = label.trim().replace(SAFE, '_');
     return FGMatch.EXT_RE.test(t) ? t : '';

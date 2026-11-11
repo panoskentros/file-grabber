@@ -6,7 +6,7 @@ You drag a box around a list of file names on a page (or paste a screenshot of o
 
 I built it for my university's eClass, where the lecture files sit in a long table, but it should work on any page that lists files as links.
 
-![A course page with a list of files](docs/course-page.png)
+<img src="docs/course-page.png" alt="A course page with a list of files" width="260">
 
 ## How it works
 
@@ -15,7 +15,7 @@ I built it for my university's eClass, where the lecture files sit in a long tab
 3. The extension reads the text in that area with OCR and compares it with the links on the page.
 4. A small panel lists what it found. Untick anything you don't want, then download the files one by one, or all together as a single ZIP.
 
-![The results panel](docs/results-panel.png)
+<img src="docs/results-panel.png" alt="The results panel" width="300">
 
 Under each file you can see what the OCR actually read and how close the match is. OCR isn't perfect (in the screenshot above it read "2023" as "2025" twice), which is why the panel is there: have a quick look before you hit download.
 

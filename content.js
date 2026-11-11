@@ -329,7 +329,8 @@
     if (unmatched.length) panel.append(el('div', { className: 'miss', textContent: 'No link found for: ' + unmatched.join(' · ') }));
 
     const path = el('div', { className: 'path', textContent: 'Save to: ' + (prefs.downloadsDir || 'Downloads') + ' (default)' });
-    const auto = el('input', { type: 'checkbox' });
+    const auto = el('input', { type: 'checkbox', checked: !!prefs.autoDownload });
+    auto.onchange = () => setPrefs({ autoDownload: auto.checked }); // saved at once, whatever button is pressed later
     panel.append(
       el('div', { className: 'opts' },
         path,
@@ -342,7 +343,7 @@
       const chosen = items.filter((_, i) => boxes[i].checked);
       if (!chosen.length) return;
       dl.disabled = true;
-      if (auto.checked) await setPrefs({ autoDownload: true, autoMode: 'files' });
+      await setPrefs({ autoMode: 'files' });
       doDownload(chosen);
     };
     const zipBtn = el('button', { textContent: 'Save all as ZIP' });
@@ -350,7 +351,7 @@
       const chosen = items.filter((_, i) => boxes[i].checked);
       if (!chosen.length) return;
       zipBtn.disabled = dl.disabled = true;
-      if (auto.checked) await setPrefs({ autoDownload: true, autoMode: 'zip' });
+      await setPrefs({ autoMode: 'zip' });
       saveAllAsZip(chosen);
     };
     const more = el('button', { textContent: 'Add another screenshot', onclick: startSelection });

@@ -23,6 +23,9 @@
     .opts { margin-top: 10px; display: grid; gap: 6px; font-size: 13px; }
     .opts select, .opts input[type=text] { width: 100%; padding: 5px 7px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; }
     .path { font-size: 12px; color: #444; word-break: break-all; background: #f3f5f8; border-radius: 6px; padding: 6px 8px; margin-top: 10px; }
+    .menu { display: grid; gap: 4px; }
+    .menu button { text-align: left; background: #f3f5f8; padding: 6px 10px; font-size: 13px; }
+    .menu button:hover { background: #e3e8f0; }
     .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     button { border: 0; border-radius: 8px; padding: 8px 12px; font-size: 14px; cursor: pointer; background: #e8e8e8; color: #111; }
     button.primary { background: #2f7df6; color: #fff; }
@@ -161,6 +164,7 @@
 
   // ---------- 2. helpers ----------
   const SAFE = /[\\/:*?"<>|\u0000-\u001f]/g;
+  const SAFE_PATH = /[\\:*?"<>|\u0000-\u001f]/g; // like SAFE but keeps / for nested folders
   const downloadName = (label) => {
     const t = label.trim().replace(SAFE, '_');
     return FGMatch.EXT_RE.test(t) ? t : '';
@@ -243,36 +247,32 @@
     });
     if (unmatched.length) panel.append(el('div', { className: 'miss', textContent: 'No link found for: ' + unmatched.join(' · ') }));
 
-    // Folder picker: a dropdown (Chrome extensions cannot browse the disk, only save below the Downloads folder).
-    const NEW = '\u0000new';
+    // Folder choice: a "Save to" field and a Select button (extensions can only save below the Downloads folder).
     const base = prefs.downloadsDir || 'Downloads';
+    let current = folderDefault;
+    const path = el('div', { className: 'path' });
+    const refreshPath = () => { path.textContent = 'Save to: ' + (current ? `${base}/${current}` : `${base} (default)`); };
+    refreshPath();
+
+    const menu = el('div', { className: 'menu' });
+    menu.style.display = 'none';
+    const choose = (v) => { current = v; refreshPath(); menu.style.display = 'none'; };
     const choices = [['', 'Downloads (default)']];
     const t = titleFolder();
-    if (t) choices.push([t, t + ' (page title)']);
+    if (t) choices.push([t, t]);
     for (const f of [...(prefs.recentFolders || []), folderDefault]) if (f && !choices.some((c) => c[0] === f)) choices.push([f, f]);
-    const select = el('select');
-    for (const [v, label] of choices) select.append(el('option', { value: v, textContent: label }));
-    select.append(el('option', { value: NEW, textContent: 'New folder…' }));
-    select.value = folderDefault;
-    const typed = el('input', { type: 'text', placeholder: 'Folder name (e.g. Algorithms/Slides)' });
-    typed.style.display = 'none';
-    const path = el('div', { className: 'path' });
-    const chosenFolder = () => (select.value === NEW ? typed.value.trim() : select.value);
-    const refreshPath = () => {
-      const f = chosenFolder();
-      path.textContent = f ? `${base}/${f}` : `${base}  (default)`;
-      typed.style.display = select.value === NEW ? '' : 'none';
-    };
-    select.onchange = () => { refreshPath(); if (select.value === NEW) typed.focus(); };
-    typed.oninput = refreshPath;
-    refreshPath();
+    for (const [v, label] of choices) menu.append(el('button', { textContent: label, onclick: () => choose(v) }));
+    const typed = el('input', { type: 'text', placeholder: 'New folder name, then Enter' });
+    typed.onkeydown = (e) => { if (e.key === 'Enter') choose(typed.value.trim().replace(SAFE_PATH, '_')); };
+    menu.append(typed);
+    const selectBtn = el('button', { textContent: 'Select folder…', onclick: () => { menu.style.display = menu.style.display === 'none' ? '' : 'none'; } });
+    const chosenFolder = () => current;
     const auto = el('input', { type: 'checkbox' });
     panel.append(
       el('div', { className: 'opts' },
-        el('div', { className: 'sub', textContent: 'Files will be saved to:' }),
         path,
-        el('label', {}, 'Save in folder', select),
-        typed,
+        el('div', {}, selectBtn),
+        menu,
         el('label', {}, auto, ' Download without asking next time')
       )
     );
